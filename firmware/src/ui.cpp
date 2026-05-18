@@ -14,6 +14,7 @@ LV_FONT_DECLARE(font_styrene_24);
 LV_FONT_DECLARE(font_styrene_20);
 LV_FONT_DECLARE(font_styrene_16);
 LV_FONT_DECLARE(font_styrene_14);
+LV_FONT_DECLARE(font_styrene_12);
 LV_FONT_DECLARE(font_mono_32);
 
 // AMOLED-1.8 (368 wide) needs smaller fonts on the Bluetooth screen so the
@@ -30,6 +31,34 @@ LV_FONT_DECLARE(font_mono_32);
 #define BT_DEVICE_FONT    font_styrene_28
 #define BT_CREDIT_1_FONT  font_styrene_24
 #define BT_CREDIT_2_FONT  font_styrene_20
+#endif
+
+// Activity screen font + spacing budget. Portrait 368x448 has less
+// vertical room, so we drop the title font and pack todo rows tighter.
+#ifdef BOARD_AMOLED_18
+#define ACT_TITLE_FONT     font_styrene_16
+#define ACT_ACTIVE_FONT    font_styrene_24
+#define ACT_PROGRESS_FONT  font_styrene_16
+#define ACT_TODO_FONT      font_styrene_14
+#define ACT_FOOTER_FONT    font_styrene_12
+#define ACT_TODO_ROW_H     22
+#define ACT_LIST_Y         170
+#define ACT_LIST_H         230
+#define ACT_ACTIVE_Y       80
+#define ACT_PROGRESS_Y     140
+#define ACT_FOOTER_Y       420
+#else
+#define ACT_TITLE_FONT     font_styrene_24
+#define ACT_ACTIVE_FONT    font_styrene_28
+#define ACT_PROGRESS_FONT  font_styrene_24
+#define ACT_TODO_FONT      font_styrene_20
+#define ACT_FOOTER_FONT    font_styrene_20
+#define ACT_TODO_ROW_H     30
+#define ACT_LIST_Y         210
+#define ACT_LIST_H         220
+#define ACT_ACTIVE_Y       100
+#define ACT_PROGRESS_Y     170
+#define ACT_FOOTER_Y       450
 #endif
 
 // Anthropic brand palette — design tokens live in theme.h
@@ -70,6 +99,17 @@ static lv_obj_t* lbl_weekly_pct;
 static lv_obj_t* lbl_weekly_label;
 static lv_obj_t* lbl_weekly_reset;
 static lv_obj_t* lbl_anim;
+
+// ---- Activity screen widgets ----
+static lv_obj_t* activity_container;
+static lv_obj_t* lbl_act_title;          // "Clawdmeter   Sonnet 4.6   1/3"
+static lv_obj_t* lbl_act_in_progress;    // big "▶ Reworking UI layout"
+static lv_obj_t* lbl_act_progress;       // "5/12 done"
+static lv_obj_t* act_list;               // scrollable flex container of todo rows
+static lv_obj_t* lbl_act_footer;         // "last active 30s ago"
+static lv_obj_t* lbl_act_placeholder;    // shown when 0 sessions
+static ActivityData cached_activity = {};
+static uint8_t current_session_idx = 0;
 
 // ---- Bluetooth screen widgets ----
 static lv_obj_t* ble_container;
@@ -164,6 +204,8 @@ static void format_reset_time(int mins, char* buf, size_t len) {
 // Forward decls — callbacks defined near ui_show_screen below
 static void global_click_cb(lv_event_t* e);
 static void ble_reset_click_cb(lv_event_t* e);
+static void activity_gesture_cb(lv_event_t* e);
+static void render_activity(void);
 
 static lv_obj_t* make_panel(lv_obj_t* parent, int x, int y, int w, int h) {
     lv_obj_t* panel = lv_obj_create(parent);
@@ -413,6 +455,224 @@ static void init_bluetooth_screen(lv_obj_t* scr) {
     lv_obj_add_flag(ble_container, LV_OBJ_FLAG_HIDDEN);
 }
 
+// ======== Activity Screen ========
+
+static void init_activity_screen(lv_obj_t* scr) {
+    activity_container = lv_obj_create(scr);
+    lv_obj_set_size(activity_container, SCR_W, SCR_H);
+    lv_obj_set_pos(activity_container, 0, 0);
+    lv_obj_set_style_bg_opa(activity_container, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(activity_container, 0, 0);
+    lv_obj_set_style_pad_all(activity_container, 0, 0);
+    lv_obj_clear_flag(activity_container, LV_OBJ_FLAG_SCROLLABLE);
+    // Tap to toggle splash (consistent with Usage screen).
+    lv_obj_add_event_cb(activity_container, global_click_cb, LV_EVENT_CLICKED, NULL);
+    // Swipe left/right to cycle sessions.
+    lv_obj_add_event_cb(activity_container, activity_gesture_cb, LV_EVENT_GESTURE, NULL);
+
+    // Title row — project, model, page indicator on the right.
+    lbl_act_title = lv_label_create(activity_container);
+    lv_label_set_text(lbl_act_title, "");
+    lv_obj_set_style_text_font(lbl_act_title, &ACT_TITLE_FONT, 0);
+    lv_obj_set_style_text_color(lbl_act_title, COL_TEXT, 0);
+    lv_obj_set_pos(lbl_act_title, MARGIN, TITLE_Y);
+    lv_obj_set_width(lbl_act_title, CONTENT_W);
+    lv_label_set_long_mode(lbl_act_title, LV_LABEL_LONG_DOT);
+
+    // Current in-progress activeForm — the headline of the screen.
+    lbl_act_in_progress = lv_label_create(activity_container);
+    lv_label_set_text(lbl_act_in_progress, "");
+    lv_obj_set_style_text_font(lbl_act_in_progress, &ACT_ACTIVE_FONT, 0);
+    lv_obj_set_style_text_color(lbl_act_in_progress, COL_ACCENT, 0);
+    lv_obj_set_pos(lbl_act_in_progress, MARGIN, ACT_ACTIVE_Y);
+    lv_obj_set_width(lbl_act_in_progress, CONTENT_W);
+    lv_label_set_long_mode(lbl_act_in_progress, LV_LABEL_LONG_WRAP);
+
+    // Progress counter — "5/12 done".
+    lbl_act_progress = lv_label_create(activity_container);
+    lv_label_set_text(lbl_act_progress, "");
+    lv_obj_set_style_text_font(lbl_act_progress, &ACT_PROGRESS_FONT, 0);
+    lv_obj_set_style_text_color(lbl_act_progress, COL_DIM, 0);
+    lv_obj_set_pos(lbl_act_progress, MARGIN, ACT_PROGRESS_Y);
+
+    // Scrollable todo list — flex column container, vertical scroll.
+    act_list = lv_obj_create(activity_container);
+    lv_obj_set_pos(act_list, MARGIN, ACT_LIST_Y);
+    lv_obj_set_size(act_list, CONTENT_W, ACT_LIST_H);
+    lv_obj_set_style_bg_opa(act_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(act_list, 0, 0);
+    lv_obj_set_style_pad_all(act_list, 0, 0);
+    lv_obj_set_style_pad_row(act_list, 2, 0);
+    lv_obj_set_flex_flow(act_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(act_list, LV_DIR_VER);
+    // Don't intercept clicks that should bubble up to global_click_cb /
+    // gestures on the container above.
+    lv_obj_add_flag(act_list, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    // Footer — "last active Ns ago".
+    lbl_act_footer = lv_label_create(activity_container);
+    lv_label_set_text(lbl_act_footer, "");
+    lv_obj_set_style_text_font(lbl_act_footer, &ACT_FOOTER_FONT, 0);
+    lv_obj_set_style_text_color(lbl_act_footer, COL_DIM, 0);
+    lv_obj_set_pos(lbl_act_footer, MARGIN, ACT_FOOTER_Y);
+
+    // Placeholder shown when no sessions are active. Use the progress
+    // font (smaller) and constrain to the content width so multi-line
+    // text wraps within the rounded-corner safe area.
+    lbl_act_placeholder = lv_label_create(activity_container);
+    lv_label_set_text(lbl_act_placeholder,
+                      "No active sessions\n\nStart Claude Code\nin any terminal");
+    lv_obj_set_style_text_font(lbl_act_placeholder, &ACT_PROGRESS_FONT, 0);
+    lv_obj_set_style_text_color(lbl_act_placeholder, COL_DIM, 0);
+    lv_obj_set_style_text_align(lbl_act_placeholder, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(lbl_act_placeholder, CONTENT_W);
+    lv_label_set_long_mode(lbl_act_placeholder, LV_LABEL_LONG_WRAP);
+    lv_obj_center(lbl_act_placeholder);
+
+    lv_obj_add_flag(activity_container, LV_OBJ_FLAG_HIDDEN);
+}
+
+static const char* todo_prefix(todo_status_t s) {
+    switch (s) {
+    case TODO_COMPLETED:   return "[x] ";
+    case TODO_IN_PROGRESS: return "[>] ";
+    case TODO_PENDING:
+    default:               return "[ ] ";
+    }
+}
+
+static lv_color_t todo_color(todo_status_t s) {
+    switch (s) {
+    case TODO_COMPLETED:   return COL_GREEN;
+    case TODO_IN_PROGRESS: return COL_ACCENT;
+    case TODO_PENDING:
+    default:               return COL_DIM;
+    }
+}
+
+static void format_age(uint32_t secs, char* buf, size_t len) {
+    if (secs < 60)        snprintf(buf, len, "last active %us ago", (unsigned)secs);
+    else if (secs < 3600) snprintf(buf, len, "last active %um ago", (unsigned)(secs / 60));
+    else                  snprintf(buf, len, "last active %uh ago", (unsigned)(secs / 3600));
+}
+
+static void render_activity(void) {
+    if (!activity_container) return;
+
+    // Clear list children before re-populating (cheap; ≤10 items).
+    lv_obj_clean(act_list);
+
+    const bool any = cached_activity.valid && cached_activity.session_count > 0;
+    if (!any) {
+        lv_obj_clear_flag(lbl_act_placeholder, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(lbl_act_title,        LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(lbl_act_in_progress,  LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(lbl_act_progress,     LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(lbl_act_footer,       LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(act_list,             LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_add_flag(lbl_act_placeholder, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(lbl_act_title,       LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(lbl_act_in_progress, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(lbl_act_progress,    LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(lbl_act_footer,      LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(act_list,            LV_OBJ_FLAG_HIDDEN);
+
+    if (current_session_idx >= cached_activity.session_count) current_session_idx = 0;
+    const SessionData& s = cached_activity.sessions[current_session_idx];
+
+    // Title: "project | model    1/3"
+    // Use ASCII bar instead of U+00B7 — bitmap fonts here only cover 0x20-0x7E.
+    {
+        char buf[96];
+        if (s.model[0]) {
+            snprintf(buf, sizeof(buf), "%s | %s    %u/%u",
+                     s.project[0] ? s.project : "(unknown)", s.model,
+                     (unsigned)(current_session_idx + 1),
+                     (unsigned)cached_activity.session_count);
+        } else {
+            snprintf(buf, sizeof(buf), "%s    %u/%u",
+                     s.project[0] ? s.project : "(unknown)",
+                     (unsigned)(current_session_idx + 1),
+                     (unsigned)cached_activity.session_count);
+        }
+        lv_label_set_text(lbl_act_title, buf);
+    }
+
+    // Headline: find the in-progress todo's activeForm (or content fallback).
+    const TodoItem* in_progress = nullptr;
+    int done = 0;
+    for (uint8_t i = 0; i < s.todo_count; i++) {
+        if (s.todos[i].status == TODO_COMPLETED) done++;
+        if (s.todos[i].status == TODO_IN_PROGRESS && !in_progress) in_progress = &s.todos[i];
+    }
+    if (in_progress) {
+        char buf[160];
+        const char* text = in_progress->active_form[0] ? in_progress->active_form
+                                                        : in_progress->content;
+        snprintf(buf, sizeof(buf), ">>  %s", text);  // ASCII fallback for ▶
+        lv_label_set_text(lbl_act_in_progress, buf);
+        lv_obj_set_style_text_color(lbl_act_in_progress, COL_ACCENT, 0);
+    } else if (s.todo_count > 0) {
+        lv_label_set_text(lbl_act_in_progress, "(no in-progress todo)");
+        lv_obj_set_style_text_color(lbl_act_in_progress, COL_DIM, 0);
+    } else {
+        lv_label_set_text(lbl_act_in_progress, "(no todos)");
+        lv_obj_set_style_text_color(lbl_act_in_progress, COL_DIM, 0);
+    }
+
+    // Progress counter.
+    {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%d/%u done", done, (unsigned)s.todo_count);
+        lv_label_set_text(lbl_act_progress, buf);
+    }
+
+    // Todo list rows. Each row is a fixed-size label so long content
+    // ellipsizes (LV_LABEL_LONG_DOT) instead of wrapping and breaking the
+    // single-line-per-todo rhythm of the list.
+    for (uint8_t i = 0; i < s.todo_count; i++) {
+        const TodoItem& t = s.todos[i];
+        lv_obj_t* row = lv_label_create(act_list);
+        char buf[TODO_CONTENT_LEN + 8];
+        snprintf(buf, sizeof(buf), "%s%s", todo_prefix(t.status), t.content);
+        lv_label_set_text(row, buf);
+        lv_obj_set_style_text_font(row, &ACT_TODO_FONT, 0);
+        lv_obj_set_style_text_color(row, todo_color(t.status), 0);
+        lv_obj_set_size(row, CONTENT_W - 4, ACT_TODO_ROW_H);
+        lv_label_set_long_mode(row, LV_LABEL_LONG_DOT);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE);
+    }
+
+    // Footer.
+    {
+        char buf[40];
+        format_age(s.last_active_secs, buf, sizeof(buf));
+        lv_label_set_text(lbl_act_footer, buf);
+    }
+}
+
+static void activity_gesture_cb(lv_event_t* e) {
+    (void)e;
+    if (cached_activity.session_count <= 1) return;
+    lv_indev_t* indev = lv_indev_active();
+    if (!indev) return;
+    lv_dir_t dir = lv_indev_get_gesture_dir(indev);
+    if (dir == LV_DIR_LEFT) {
+        current_session_idx = (current_session_idx + 1) % cached_activity.session_count;
+    } else if (dir == LV_DIR_RIGHT) {
+        current_session_idx = (current_session_idx + cached_activity.session_count - 1)
+                              % cached_activity.session_count;
+    } else {
+        return;
+    }
+    render_activity();
+    // Suppress further events from this swipe so render runs once per gesture.
+    lv_indev_wait_release(indev);
+}
+
 // ======== Public API ========
 
 void ui_init(void) {
@@ -429,6 +689,7 @@ void ui_init(void) {
     init_battery_icons();
 
     init_usage_screen(scr);
+    init_activity_screen(scr);
     init_bluetooth_screen(scr);
     splash_init(scr);
 
@@ -446,6 +707,15 @@ void ui_init(void) {
     battery_img = lv_image_create(scr);
     lv_image_set_src(battery_img, &battery_dscs[0]);
     lv_obj_set_pos(battery_img, SCR_W - 48 - MARGIN, TITLE_Y);
+}
+
+void ui_update_activity(const ActivityData* data) {
+    if (!data) return;
+    cached_activity = *data;
+    cached_activity.valid = true;
+    if (cached_activity.session_count == 0) current_session_idx = 0;
+    else if (current_session_idx >= cached_activity.session_count) current_session_idx = 0;
+    render_activity();
 }
 
 void ui_update(const UsageData* data) {
@@ -521,20 +791,26 @@ static void ble_reset_click_cb(lv_event_t* e) {
 
 void ui_show_screen(screen_t screen) {
     lv_obj_add_flag(usage_container, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(activity_container, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ble_container, LV_OBJ_FLAG_HIDDEN);
     splash_hide();
 
     switch (screen) {
     case SCREEN_SPLASH:     splash_show(); break;
     case SCREEN_USAGE:      lv_obj_clear_flag(usage_container, LV_OBJ_FLAG_HIDDEN); break;
+    case SCREEN_ACTIVITY:   lv_obj_clear_flag(activity_container, LV_OBJ_FLAG_HIDDEN); break;
     case SCREEN_BLUETOOTH:  lv_obj_clear_flag(ble_container, LV_OBJ_FLAG_HIDDEN); break;
     default: break;
     }
 
-    // Hide the logo overlay on the splash screen so the animation has a clean canvas
+    // Hide the logo overlay on screens where it would collide with the
+    // content area: splash (full-screen animation) and Activity (title
+    // text starts flush against the left margin).
     if (logo_img) {
-        if (screen == SCREEN_SPLASH) lv_obj_add_flag(logo_img, LV_OBJ_FLAG_HIDDEN);
-        else                          lv_obj_clear_flag(logo_img, LV_OBJ_FLAG_HIDDEN);
+        if (screen == SCREEN_SPLASH || screen == SCREEN_ACTIVITY)
+            lv_obj_add_flag(logo_img, LV_OBJ_FLAG_HIDDEN);
+        else
+            lv_obj_clear_flag(logo_img, LV_OBJ_FLAG_HIDDEN);
     }
 
     if (screen != SCREEN_SPLASH) prev_non_splash_screen = screen;
@@ -543,7 +819,15 @@ void ui_show_screen(screen_t screen) {
 }
 
 void ui_cycle_screen(void) {
-    screen_t next = (current_screen == SCREEN_USAGE) ? SCREEN_BLUETOOTH : SCREEN_USAGE;
+    // Cycle order: Usage → Activity → Bluetooth → Usage. Splash is not in
+    // the cycle (tap to enter/leave instead).
+    screen_t next;
+    switch (current_screen) {
+    case SCREEN_USAGE:     next = SCREEN_ACTIVITY;   break;
+    case SCREEN_ACTIVITY:  next = SCREEN_BLUETOOTH;  break;
+    case SCREEN_BLUETOOTH: next = SCREEN_USAGE;      break;
+    default:               next = SCREEN_USAGE;      break;
+    }
     ui_show_screen(next);
 }
 
