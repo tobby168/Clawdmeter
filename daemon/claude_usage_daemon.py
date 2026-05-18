@@ -308,7 +308,8 @@ class Session:
         # Without this, payloads larger than MTU-3 would be silently split
         # into multiple onWrite callbacks on the firmware side.
         try:
-            log(f"Sending {len(data)}B: {data[:200].decode()}{'…' if len(data) > 200 else ''}")
+            log(f"Sending {len(data)}B: "
+                f"{data[:200].decode('utf-8', errors='replace')}{'…' if len(data) > 200 else ''}")
             await self.client.write_gatt_char(RX_CHAR_UUID, data, response=True)
             return True
         except BleakError as e:
@@ -331,9 +332,19 @@ def _serialize_capped(payload: dict) -> str:
     work = json.loads(json.dumps(payload))  # cheap deep copy
 
     def encode():
-        return json.dumps(work, separators=(",", ":"))
+        # ensure_ascii=False keeps UTF-8 multi-byte chars as their 2-3
+        # byte form instead of 6-byte \uXXXX escapes — saves ~50% on
+        # payloads with CJK or other non-Latin user prompts. ArduinoJson
+        # on the firmware side decodes UTF-8 transparently.
+        return json.dumps(work, separators=(",", ":"), ensure_ascii=False)
 
-    if len(encode()) <= MAX_BLE_PAYLOAD:
+    def encoded_bytes():
+        # Compare against the BLE byte budget — Python `str` length
+        # counts Unicode code points, which under-counts CJK by 3x
+        # because each char is 3 bytes in UTF-8.
+        return len(encode().encode("utf-8"))
+
+    if encoded_bytes() <= MAX_BLE_PAYLOAD:
         return encode()
     sessions = work.get("sessions") or []
     while sessions:
@@ -352,7 +363,7 @@ def _serialize_capped(payload: dict) -> str:
         else:
             sessions.pop()
         work["sessions"] = sessions
-        if len(encode()) <= MAX_BLE_PAYLOAD:
+        if encoded_bytes() <= MAX_BLE_PAYLOAD:
             return encode()
     work.pop("sessions", None)
     return encode()
