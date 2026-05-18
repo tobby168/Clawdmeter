@@ -376,6 +376,9 @@ static void init_bluetooth_screen(lv_obj_t* scr) {
     lv_obj_set_style_border_width(ble_container, 0, 0);
     lv_obj_set_style_pad_all(ble_container, 0, 0);
     lv_obj_clear_flag(ble_container, LV_OBJ_FLAG_SCROLLABLE);
+    // Tap on BT background (anywhere outside the reset zone) cycles to the
+    // next screen. The reset zone's own handler consumes its taps first.
+    lv_obj_add_event_cb(ble_container, global_click_cb, LV_EVENT_CLICKED, NULL);
 
     // Title
     lv_obj_t* lbl_ble_title = lv_label_create(ble_container);
@@ -774,14 +777,21 @@ static void apply_battery_visibility(void) {
     else                                  lv_obj_clear_flag(battery_img, LV_OBJ_FLAG_HIDDEN);
 }
 
-// LVGL handles click debouncing internally. Screen-level handler fires when
-// no child consumed the event (children only consume if they have their own
-// event callback, e.g. the Reset Bluetooth zone). On BT screen we skip the
-// splash toggle so only the reset zone is interactive there.
+// Screen-level click handler — cycles forward through all four screens
+// (Splash → Usage → Activity → Bluetooth → Splash). The Bluetooth reset
+// zone has its own callback that consumes the click first, so taps inside
+// it still trigger ble_clear_bonds rather than the cycle.
 static void global_click_cb(lv_event_t* e) {
     (void)e;
-    if (ui_get_current_screen() == SCREEN_BLUETOOTH) return;
-    ui_toggle_splash();
+    screen_t next;
+    switch (ui_get_current_screen()) {
+    case SCREEN_SPLASH:    next = SCREEN_USAGE;     break;
+    case SCREEN_USAGE:     next = SCREEN_ACTIVITY;  break;
+    case SCREEN_ACTIVITY:  next = SCREEN_BLUETOOTH; break;
+    case SCREEN_BLUETOOTH: next = SCREEN_SPLASH;    break;
+    default:               next = SCREEN_SPLASH;    break;
+    }
+    ui_show_screen(next);
 }
 
 static void ble_reset_click_cb(lv_event_t* e) {
