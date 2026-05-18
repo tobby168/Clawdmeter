@@ -258,8 +258,11 @@ static bool parse_json(const char* json, UsageData* out, ActivityData* act_out) 
         for (JsonVariantConst sv : sessions) {
             if (act_out->session_count >= MAX_SESSIONS) break;
             SessionData& s = act_out->sessions[act_out->session_count];
-            strlcpy(s.project, sv["p"] | "", sizeof(s.project));
-            strlcpy(s.model,   sv["m"] | "", sizeof(s.model));
+            strlcpy(s.project,      sv["p"] | "", sizeof(s.project));
+            strlcpy(s.model,        sv["m"] | "", sizeof(s.model));
+            strlcpy(s.last_prompt,  sv["u"] | "", sizeof(s.last_prompt));
+            strlcpy(s.current_tool, sv["t"] | "", sizeof(s.current_tool));
+            s.phase = ((int)(sv["ph"] | 0)) == 1 ? PHASE_RUNNING : PHASE_IDLE;
             s.last_active_secs = sv["la"] | 0;
             s.todo_count = 0;
             JsonArrayConst td = sv["td"].as<JsonArrayConst>();
