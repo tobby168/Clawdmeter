@@ -11,7 +11,9 @@
 #define TX_CHAR_UUID        "4c41555a-4465-7669-6365-000000000003"  // device ack/nack notifies
 #define REQ_CHAR_UUID       "4c41555a-4465-7669-6365-000000000004"  // device-initiated refresh request
 
-#define BLE_BUF_SIZE 512
+// Bumped from 512 to fit the activity payload (3 sessions × ~10 todos with
+// content strings; observed ~1.5 KB, headroom for growth).
+#define BLE_BUF_SIZE 4096
 
 // HID keyboard report descriptor (standard 6-KRO boot-protocol-compatible).
 // Includes the LED output report (Num/Caps/Scroll Lock indicators) — without
