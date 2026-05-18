@@ -38,37 +38,39 @@ LV_FONT_DECLARE(font_mono_32);
 // at arm's length — bumped one or two steps with a tighter list region.
 #ifdef BOARD_AMOLED_18
 #define ACT_TITLE_FONT     font_styrene_20
+#define ACT_MODEL_FONT     font_styrene_14
 #define ACT_PROMPT_FONT    font_styrene_16
 #define ACT_ACTIVE_FONT    font_styrene_28
 #define ACT_PROGRESS_FONT  font_styrene_20
 #define ACT_TODO_FONT      font_styrene_16
 #define ACT_FOOTER_FONT    font_styrene_14
 #define ACT_TODO_ROW_H     24
-#define ACT_PROMPT_Y       55
-#define ACT_ACTIVE_Y       85
+#define ACT_MODEL_Y        46
+#define ACT_PROMPT_Y       70
+#define ACT_ACTIVE_Y       95
 #define ACT_ACTIVE_H       60   // up to 2 lines of font_styrene_28
-#define ACT_PROGRESS_Y     150
-#define ACT_LIST_Y         180
-#define ACT_LIST_H         205
+#define ACT_PANEL_Y        160
+#define ACT_PANEL_H        230
 #define ACT_FOOTER_Y       400
 // Counter width reservation: ~60px for "9/9" at font_styrene_20, plus the
 // battery icon (48 + 20 = 68 from the right edge) → shift counter left.
 #define ACT_COUNTER_RIGHT  76
 #else
 #define ACT_TITLE_FONT     font_styrene_28
+#define ACT_MODEL_FONT     font_styrene_20
 #define ACT_PROMPT_FONT    font_styrene_20
 #define ACT_ACTIVE_FONT    font_styrene_28
 #define ACT_PROGRESS_FONT  font_styrene_24
 #define ACT_TODO_FONT      font_styrene_20
 #define ACT_FOOTER_FONT    font_styrene_20
 #define ACT_TODO_ROW_H     30
-#define ACT_PROMPT_Y       80
-#define ACT_ACTIVE_Y       115
+#define ACT_MODEL_Y        64
+#define ACT_PROMPT_Y       96
+#define ACT_ACTIVE_Y       128
 #define ACT_ACTIVE_H       60
-#define ACT_PROGRESS_Y     185
-#define ACT_LIST_Y         220
-#define ACT_LIST_H         205
-#define ACT_FOOTER_Y       450
+#define ACT_PANEL_Y        195
+#define ACT_PANEL_H        225
+#define ACT_FOOTER_Y       440
 #define ACT_COUNTER_RIGHT  76
 #endif
 
@@ -113,11 +115,13 @@ static lv_obj_t* lbl_anim;
 
 // ---- Activity screen widgets ----
 static lv_obj_t* activity_container;
-static lv_obj_t* lbl_act_title;          // "Clawdmeter | sonnet-4-6"
+static lv_obj_t* lbl_act_title;          // project name (line 1, accent text color)
+static lv_obj_t* lbl_act_model;          // model name (line 2, dim subtitle)
 static lv_obj_t* lbl_act_counter;        // "1/3", colored by phase (green=running, dim=idle)
 static lv_obj_t* lbl_act_prompt;         // dim, last user prompt (1 line ellipsized)
 static lv_obj_t* lbl_act_in_progress;    // ">> Reworking UI layout"
-static lv_obj_t* lbl_act_progress;       // "5/12 done"
+static lv_obj_t* act_todo_panel;         // rounded card wrapping progress + list
+static lv_obj_t* lbl_act_progress;       // "5/12 done" — header inside the panel
 static lv_obj_t* act_list;               // scrollable flex container of todo rows
 static lv_obj_t* lbl_act_footer;         // "last active 30s ago"
 static lv_obj_t* lbl_act_placeholder;    // shown when 0 sessions
@@ -509,6 +513,15 @@ static void init_activity_screen(lv_obj_t* scr) {
                     CONTENT_W - (ACT_COUNTER_RIGHT - MARGIN) - 50, 26);
     lv_label_set_long_mode(lbl_act_title, LV_LABEL_LONG_DOT);
 
+    // Model on its own line (subtitle under project name).
+    lbl_act_model = lv_label_create(activity_container);
+    lv_label_set_text(lbl_act_model, "");
+    lv_obj_set_style_text_font(lbl_act_model, &ACT_MODEL_FONT, 0);
+    lv_obj_set_style_text_color(lbl_act_model, COL_DIM, 0);
+    lv_obj_set_pos(lbl_act_model, MARGIN, ACT_MODEL_Y);
+    lv_obj_set_size(lbl_act_model, CONTENT_W, 20);
+    lv_label_set_long_mode(lbl_act_model, LV_LABEL_LONG_DOT);
+
     // Last user prompt — dim, single ellipsized line under title. Hidden
     // when the daemon hasn't reported a prompt for this session yet.
     // LV_LABEL_LONG_DOT requires a fixed size or it wraps instead of clipping.
@@ -530,17 +543,23 @@ static void init_activity_screen(lv_obj_t* scr) {
     lv_obj_set_size(lbl_act_in_progress, CONTENT_W, ACT_ACTIVE_H);
     lv_label_set_long_mode(lbl_act_in_progress, LV_LABEL_LONG_DOT);
 
-    // Progress counter — "5/12 done".
-    lbl_act_progress = lv_label_create(activity_container);
+    // Rounded "card" wrapping the progress header + todo list, matching
+    // the panel design language of the Usage and Bluetooth screens.
+    act_todo_panel = make_panel(activity_container, MARGIN, ACT_PANEL_Y,
+                                CONTENT_W, ACT_PANEL_H);
+
+    // Progress counter — "5/12 done" — sits at the top of the panel.
+    lbl_act_progress = lv_label_create(act_todo_panel);
     lv_label_set_text(lbl_act_progress, "");
     lv_obj_set_style_text_font(lbl_act_progress, &ACT_PROGRESS_FONT, 0);
-    lv_obj_set_style_text_color(lbl_act_progress, COL_DIM, 0);
-    lv_obj_set_pos(lbl_act_progress, MARGIN, ACT_PROGRESS_Y);
+    lv_obj_set_style_text_color(lbl_act_progress, COL_TEXT, 0);
+    lv_obj_set_pos(lbl_act_progress, 0, 0);
 
-    // Scrollable todo list — flex column container, vertical scroll.
-    act_list = lv_obj_create(activity_container);
-    lv_obj_set_pos(act_list, MARGIN, ACT_LIST_Y);
-    lv_obj_set_size(act_list, CONTENT_W, ACT_LIST_H);
+    // Scrollable todo list — flex column container, vertical scroll —
+    // sits below the progress label inside the same panel.
+    act_list = lv_obj_create(act_todo_panel);
+    lv_obj_set_pos(act_list, 0, 32);  // 32px = progress font + small gap
+    lv_obj_set_size(act_list, CONTENT_W - 32, ACT_PANEL_H - 32 - 24);
     lv_obj_set_style_bg_opa(act_list, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(act_list, 0, 0);
     lv_obj_set_style_pad_all(act_list, 0, 0);
@@ -608,38 +627,29 @@ static void render_activity(void) {
     if (!any) {
         lv_obj_clear_flag(lbl_act_placeholder, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lbl_act_title,        LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(lbl_act_model,        LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lbl_act_counter,      LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lbl_act_prompt,       LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lbl_act_in_progress,  LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(lbl_act_progress,     LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(act_todo_panel,       LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lbl_act_footer,       LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(act_list,             LV_OBJ_FLAG_HIDDEN);
         return;
     }
     lv_obj_add_flag(lbl_act_placeholder, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(lbl_act_title,       LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(lbl_act_model,       LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(lbl_act_counter,     LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(lbl_act_in_progress, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(lbl_act_progress,    LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(act_todo_panel,      LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(lbl_act_footer,      LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(act_list,            LV_OBJ_FLAG_HIDDEN);
 
     if (current_session_idx >= cached_activity.session_count) current_session_idx = 0;
     const SessionData& s = cached_activity.sessions[current_session_idx];
 
-    // Title: "project | model" (no counter — that goes in the right-aligned
-    // counter label, which is colored by phase).
-    {
-        char buf[96];
-        if (s.model[0]) {
-            snprintf(buf, sizeof(buf), "%s | %s",
-                     s.project[0] ? s.project : "(unknown)", s.model);
-        } else {
-            snprintf(buf, sizeof(buf), "%s",
-                     s.project[0] ? s.project : "(unknown)");
-        }
-        lv_label_set_text(lbl_act_title, buf);
-    }
+    // Title — project name on line 1, model on line 2 (subtitle style).
+    // Counter (right-aligned, phase-colored) is handled separately below.
+    lv_label_set_text(lbl_act_title, s.project[0] ? s.project : "(unknown)");
+    lv_label_set_text(lbl_act_model, s.model[0] ? s.model : "");
 
     // Counter — colored green when the agent is running, dim when idle.
     {
