@@ -16,6 +16,7 @@ LV_FONT_DECLARE(font_styrene_16);
 LV_FONT_DECLARE(font_styrene_14);
 LV_FONT_DECLARE(font_styrene_12);
 LV_FONT_DECLARE(font_mono_32);
+LV_FONT_DECLARE(font_cjk_16);
 
 // AMOLED-1.8 (368 wide) needs smaller fonts on the Bluetooth screen so the
 // MAC address and credit lines don't overflow horizontally.
@@ -42,10 +43,15 @@ LV_FONT_DECLARE(font_mono_32);
 #ifdef BOARD_AMOLED_18
 #define ACT_TITLE_FONT     font_styrene_20
 #define ACT_MODEL_FONT     font_styrene_14
-#define ACT_PROMPT_FONT    font_styrene_16
+// Prompt + todo body use the CJK-capable font so Chinese / Japanese /
+// Korean text from real Claude Code sessions renders instead of
+// falling through to blank glyphs. Headline (28pt) stays in the
+// Styrene brand font — Chinese activeForms there won't render, but
+// generating a 28pt CJK font would balloon flash by another ~1MB.
+#define ACT_PROMPT_FONT    font_cjk_16
 #define ACT_ACTIVE_FONT    font_styrene_28
 #define ACT_PROGRESS_FONT  font_styrene_20
-#define ACT_TODO_FONT      font_styrene_16
+#define ACT_TODO_FONT      font_cjk_16
 #define ACT_FOOTER_FONT    font_styrene_14
 #define ACT_TODO_ROW_H     24
 #define ACT_TITLE_Y        45
@@ -495,8 +501,15 @@ static void init_activity_screen(lv_obj_t* scr) {
     lv_obj_clear_flag(activity_container, LV_OBJ_FLAG_SCROLLABLE);
     // Tap to toggle splash (consistent with Usage screen).
     lv_obj_add_event_cb(activity_container, global_click_cb, LV_EVENT_CLICKED, NULL);
-    // Swipe left/right to cycle sessions.
-    lv_obj_add_event_cb(activity_container, activity_gesture_cb, LV_EVENT_GESTURE, NULL);
+    // Swipe left/right to cycle sessions. LV_EVENT_GESTURE fires on the
+    // indev's last-pressed object, NOT on the screen — so attach to the
+    // top-level screen and gate by current_screen inside the callback.
+    // (We also leave a copy on activity_container for the rare case where
+    // the touch happens to start on the bare container background.)
+    lv_obj_add_event_cb(lv_screen_active(),
+                        activity_gesture_cb, LV_EVENT_GESTURE, NULL);
+    lv_obj_add_event_cb(activity_container,
+                        activity_gesture_cb, LV_EVENT_GESTURE, NULL);
 
     // Title row — left: "project | model", right: "N/M" page counter
     // colored by phase (green = running, dim = idle). Split into two
@@ -768,10 +781,14 @@ static void render_activity(void) {
 
 static void activity_gesture_cb(lv_event_t* e) {
     (void)e;
-    if (cached_activity.session_count <= 1) return;
+    // Only act on gestures while the Activity screen is showing — this
+    // same handler is registered on the screen root and fires for every
+    // gesture regardless of which screen is visible.
+    if (ui_get_current_screen() != SCREEN_ACTIVITY) return;
     lv_indev_t* indev = lv_indev_active();
     if (!indev) return;
     lv_dir_t dir = lv_indev_get_gesture_dir(indev);
+    if (cached_activity.session_count <= 1) return;
     if (dir == LV_DIR_LEFT) {
         current_session_idx = (current_session_idx + 1) % cached_activity.session_count;
     } else if (dir == LV_DIR_RIGHT) {
