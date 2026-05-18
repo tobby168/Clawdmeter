@@ -57,11 +57,12 @@ LV_FONT_DECLARE(font_cjk_16);
 #define ACT_TITLE_Y        45
 #define ACT_MODEL_Y        70
 #define ACT_PROMPT_Y       94
-#define ACT_ACTIVE_Y       120
+#define ACT_PROMPT_H       30   // font_cjk_16 line_height is 31 — was 22, clipped descenders
+#define ACT_ACTIVE_Y       132  // bumped from 120 to give the taller prompt row room
 #define ACT_ACTIVE_H       60   // up to 2 lines of font_styrene_28
-#define ACT_PANEL_Y        185
+#define ACT_PANEL_Y        195  // bumped from 185 to follow the headline
 #define ACT_PANEL_H        185  // progress header + 5 rows × 24 + padding
-#define ACT_FOOTER_Y       402
+#define ACT_FOOTER_Y       412  // bumped from 402 to stay just below the panel
 // Counter width reservation: ~60px for "9/9" at font_styrene_20, plus the
 // battery icon (48 + 20 = 68 from the right edge) → shift counter left.
 #define ACT_COUNTER_RIGHT  76
@@ -77,11 +78,12 @@ LV_FONT_DECLARE(font_cjk_16);
 #define ACT_TITLE_Y        50
 #define ACT_MODEL_Y        86
 #define ACT_PROMPT_Y       118
-#define ACT_ACTIVE_Y       150
+#define ACT_PROMPT_H       30
+#define ACT_ACTIVE_Y       160
 #define ACT_ACTIVE_H       60
-#define ACT_PANEL_Y        220
-#define ACT_PANEL_H        210  // progress header + 5 rows × 30 + padding
-#define ACT_FOOTER_Y       442
+#define ACT_PANEL_Y        228
+#define ACT_PANEL_H        202  // progress header + 5 rows × 30 + padding
+#define ACT_FOOTER_Y       444
 #define ACT_COUNTER_RIGHT  76
 #endif
 
@@ -551,7 +553,7 @@ static void init_activity_screen(lv_obj_t* scr) {
     lv_obj_set_style_text_font(lbl_act_prompt, &ACT_PROMPT_FONT, 0);
     lv_obj_set_style_text_color(lbl_act_prompt, COL_DIM, 0);
     lv_obj_set_pos(lbl_act_prompt, MARGIN, ACT_PROMPT_Y);
-    lv_obj_set_size(lbl_act_prompt, CONTENT_W, 22);
+    lv_obj_set_size(lbl_act_prompt, CONTENT_W, ACT_PROMPT_H);
     lv_label_set_long_mode(lbl_act_prompt, LV_LABEL_LONG_DOT);
 
     // Current in-progress activeForm — the headline of the screen.
