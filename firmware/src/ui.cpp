@@ -36,6 +36,9 @@ LV_FONT_DECLARE(font_mono_32);
 // Activity screen font + spacing budget. Portrait 368x448 has less
 // vertical room, but the previous font scale (12-16pt) was unreadable
 // at arm's length — bumped one or two steps with a tighter list region.
+// Activity is the only screen that uses its own title baseline (everything
+// else aligns to the shared TITLE_Y=30). We push it ~15px lower so the
+// title doesn't crowd the rounded display corners and battery icon.
 #ifdef BOARD_AMOLED_18
 #define ACT_TITLE_FONT     font_styrene_20
 #define ACT_MODEL_FONT     font_styrene_14
@@ -45,13 +48,14 @@ LV_FONT_DECLARE(font_mono_32);
 #define ACT_TODO_FONT      font_styrene_16
 #define ACT_FOOTER_FONT    font_styrene_14
 #define ACT_TODO_ROW_H     24
-#define ACT_MODEL_Y        46
-#define ACT_PROMPT_Y       70
-#define ACT_ACTIVE_Y       95
+#define ACT_TITLE_Y        45
+#define ACT_MODEL_Y        70
+#define ACT_PROMPT_Y       94
+#define ACT_ACTIVE_Y       120
 #define ACT_ACTIVE_H       60   // up to 2 lines of font_styrene_28
-#define ACT_PANEL_Y        160
-#define ACT_PANEL_H        230
-#define ACT_FOOTER_Y       400
+#define ACT_PANEL_Y        185
+#define ACT_PANEL_H        185  // progress header + 5 rows × 24 + padding
+#define ACT_FOOTER_Y       402
 // Counter width reservation: ~60px for "9/9" at font_styrene_20, plus the
 // battery icon (48 + 20 = 68 from the right edge) → shift counter left.
 #define ACT_COUNTER_RIGHT  76
@@ -64,15 +68,19 @@ LV_FONT_DECLARE(font_mono_32);
 #define ACT_TODO_FONT      font_styrene_20
 #define ACT_FOOTER_FONT    font_styrene_20
 #define ACT_TODO_ROW_H     30
-#define ACT_MODEL_Y        64
-#define ACT_PROMPT_Y       96
-#define ACT_ACTIVE_Y       128
+#define ACT_TITLE_Y        50
+#define ACT_MODEL_Y        86
+#define ACT_PROMPT_Y       118
+#define ACT_ACTIVE_Y       150
 #define ACT_ACTIVE_H       60
-#define ACT_PANEL_Y        195
-#define ACT_PANEL_H        225
-#define ACT_FOOTER_Y       440
+#define ACT_PANEL_Y        220
+#define ACT_PANEL_H        210  // progress header + 5 rows × 30 + padding
+#define ACT_FOOTER_Y       442
 #define ACT_COUNTER_RIGHT  76
 #endif
+
+// Cap visible todo rows so we can size the panel deterministically.
+#define ACT_TODO_WINDOW    5
 
 // Anthropic brand palette — design tokens live in theme.h
 #include "theme.h"
@@ -499,13 +507,13 @@ static void init_activity_screen(lv_obj_t* scr) {
     lv_obj_set_style_text_font(lbl_act_counter, &ACT_TITLE_FONT, 0);
     lv_obj_set_style_text_color(lbl_act_counter, COL_DIM, 0);
     // Shifted left of the battery icon (which sits at SCR_W - 48 - MARGIN).
-    lv_obj_align(lbl_act_counter, LV_ALIGN_TOP_RIGHT, -ACT_COUNTER_RIGHT, TITLE_Y);
+    lv_obj_align(lbl_act_counter, LV_ALIGN_TOP_RIGHT, -ACT_COUNTER_RIGHT, ACT_TITLE_Y);
 
     lbl_act_title = lv_label_create(activity_container);
     lv_label_set_text(lbl_act_title, "");
     lv_obj_set_style_text_font(lbl_act_title, &ACT_TITLE_FONT, 0);
     lv_obj_set_style_text_color(lbl_act_title, COL_TEXT, 0);
-    lv_obj_set_pos(lbl_act_title, MARGIN, TITLE_Y);
+    lv_obj_set_pos(lbl_act_title, MARGIN, ACT_TITLE_Y);
     // Reserve right margin for: counter (~50px worst case "99/99") +
     // its own ACT_COUNTER_RIGHT pad + a small gap. Fixed height needed
     // alongside LV_LABEL_LONG_DOT or the label wraps instead of clipping.
@@ -661,7 +669,8 @@ static void render_activity(void) {
         lv_obj_set_style_text_color(lbl_act_counter,
             s.phase == PHASE_RUNNING ? COL_GREEN : COL_DIM, 0);
         // Re-align after text change so right-edge tracks the new width.
-        lv_obj_align(lbl_act_counter, LV_ALIGN_TOP_RIGHT, -ACT_COUNTER_RIGHT, TITLE_Y);
+        lv_obj_align(lbl_act_counter, LV_ALIGN_TOP_RIGHT,
+                     -ACT_COUNTER_RIGHT, ACT_TITLE_Y);
     }
 
     // Last user prompt — hide entirely when empty so the headline has the
@@ -681,10 +690,14 @@ static void render_activity(void) {
     //   3. otherwise phase == idle → "(idle)"
     //   4. otherwise "(no todos)"
     const TodoItem* in_progress = nullptr;
+    int in_progress_idx = -1;
     int done = 0;
     for (uint8_t i = 0; i < s.todo_count; i++) {
         if (s.todos[i].status == TODO_COMPLETED) done++;
-        if (s.todos[i].status == TODO_IN_PROGRESS && !in_progress) in_progress = &s.todos[i];
+        if (s.todos[i].status == TODO_IN_PROGRESS && !in_progress) {
+            in_progress = &s.todos[i];
+            in_progress_idx = i;
+        }
     }
     if (in_progress) {
         char buf[160];
@@ -713,10 +726,25 @@ static void render_activity(void) {
         lv_label_set_text(lbl_act_progress, buf);
     }
 
-    // Todo list rows. Each row is a fixed-size label so long content
-    // ellipsizes (LV_LABEL_LONG_DOT) instead of wrapping and breaking the
-    // single-line-per-todo rhythm of the list.
-    for (uint8_t i = 0; i < s.todo_count; i++) {
+    // Windowed todo list — show at most ACT_TODO_WINDOW rows, centered on
+    // the in-progress item when there is one (2 above, in-progress in the
+    // middle, 2 below). Slides toward an edge if centering would overflow.
+    // If there's no in-progress todo, just show the head of the list.
+    int total = (int)s.todo_count;
+    int win_start;
+    if (total <= ACT_TODO_WINDOW) {
+        win_start = 0;
+    } else if (in_progress_idx < 0) {
+        win_start = 0;
+    } else {
+        win_start = in_progress_idx - ACT_TODO_WINDOW / 2;
+        if (win_start + ACT_TODO_WINDOW > total) win_start = total - ACT_TODO_WINDOW;
+        if (win_start < 0) win_start = 0;
+    }
+    int win_end = win_start + ACT_TODO_WINDOW;
+    if (win_end > total) win_end = total;
+
+    for (int i = win_start; i < win_end; i++) {
         const TodoItem& t = s.todos[i];
         lv_obj_t* row = lv_label_create(act_list);
         char buf[TODO_CONTENT_LEN + 8];
