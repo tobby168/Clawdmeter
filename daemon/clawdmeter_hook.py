@@ -85,6 +85,9 @@ def _update(payload: dict) -> None:
             "project": "",
             "model": "",
             "last_tool": "",
+            "current_tool": "",
+            "phase": "idle",
+            "last_user_prompt": "",
             "last_active_ts": 0,
             "todos": [],
         })
@@ -109,10 +112,35 @@ def _update(payload: dict) -> None:
                 for t in raw_todos if isinstance(t, dict)
             ]
             session["last_tool"] = "TodoWrite"
+            session["current_tool"] = "TodoWrite"
+            session["phase"] = "running"
         elif event == "PreToolUse" and tool_name:
             session["last_tool"] = tool_name
+            session["current_tool"] = tool_name
+            session["phase"] = "running"
+        elif event == "PostToolUse":
+            # Intentionally keep `current_tool` set: Claude is usually
+            # mid-turn between two tool calls and clearing here would
+            # cause the headline to flicker to "(idle)" until PreToolUse
+            # for the next tool arrives.
+            session["phase"] = "running"
+        elif event == "UserPromptSubmit":
+            prompt = payload.get("prompt", "")
+            if isinstance(prompt, str):
+                session["last_user_prompt"] = prompt[:120]
+            session["phase"] = "running"
+            # Clear current_tool — a new prompt starts a fresh turn,
+            # any leftover from the previous turn is no longer accurate.
+            session["current_tool"] = ""
         elif event == "Stop":
             session["last_tool"] = "idle"
+            session["current_tool"] = ""
+            session["phase"] = "idle"
+        elif event == "SessionStart":
+            # Resume / fresh open: assume idle until a tool fires. Avoids
+            # a stale "running" sticking around across daemon restarts.
+            session["phase"] = "idle"
+            session["current_tool"] = ""
 
         sessions[session_id] = session
         state["sessions"] = sessions

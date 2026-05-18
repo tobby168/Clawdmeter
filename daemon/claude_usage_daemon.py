@@ -160,6 +160,10 @@ def save_address(addr: str) -> None:
 
 
 _STATUS_NUM = {"pending": 0, "in_progress": 1, "completed": 2}
+_PHASE_NUM = {"idle": 0, "running": 1}
+
+USER_PROMPT_MAX = 60
+CURRENT_TOOL_MAX = 24
 
 
 def load_activity_sessions() -> list[dict]:
@@ -205,12 +209,20 @@ def load_activity_sessions() -> list[dict]:
                 if af:
                     entry["a"] = af
             compact_todos.append(entry)
-        out.append({
+        entry = {
             "p": str(s.get("project", ""))[:24],
             "m": str(s.get("model", ""))[:24],
             "la": max(0, int(now - la_ts)),
+            "ph": _PHASE_NUM.get(str(s.get("phase", "idle")), 0),
             "td": compact_todos,
-        })
+        }
+        ct = str(s.get("current_tool", ""))[:CURRENT_TOOL_MAX]
+        if ct:
+            entry["t"] = ct
+        up = str(s.get("last_user_prompt", ""))[:USER_PROMPT_MAX]
+        if up:
+            entry["u"] = up
+        out.append(entry)
     return out
 
 
@@ -308,28 +320,42 @@ def _serialize_capped(payload: dict) -> str:
     """JSON-serialize payload, shrinking the sessions array if needed so the
     encoded length stays under MAX_BLE_PAYLOAD bytes.
 
-    Drops todos from the tail of the least-recently-active session first,
-    then drops the least-recently-active session entirely, and finally
-    drops the whole `sessions` field if even an empty list won't fit.
+    Graduated trim from the tail-most session, in order of least UX impact:
+      1. drop `u` (user prompt) — long-ish, usually optional
+      2. drop tail todos one at a time
+      3. drop `t` (current_tool) — short, but signal-bearing
+      4. drop the whole session
+    Repeat across remaining sessions, finally drop `sessions` entirely if
+    even an empty list doesn't fit.
     """
     work = json.loads(json.dumps(payload))  # cheap deep copy
-    encoded = json.dumps(work, separators=(",", ":"))
-    if len(encoded) <= MAX_BLE_PAYLOAD:
-        return encoded
+
+    def encode():
+        return json.dumps(work, separators=(",", ":"))
+
+    if len(encode()) <= MAX_BLE_PAYLOAD:
+        return encode()
     sessions = work.get("sessions") or []
     while sessions:
         last = sessions[-1]
-        td = last.get("td") or []
-        if td:
-            last["td"] = td[:-1]
+        # Step 1: drop the optional user prompt first
+        if "u" in last:
+            last.pop("u", None)
+        # Step 2: drop tail todos one at a time
+        elif last.get("td"):
+            last["td"] = last["td"][:-1]
+        # Step 3: drop current_tool (still keep project+model+phase
+        # so the user sees the session exists)
+        elif "t" in last:
+            last.pop("t", None)
+        # Step 4: drop the whole session
         else:
             sessions.pop()
         work["sessions"] = sessions
-        encoded = json.dumps(work, separators=(",", ":"))
-        if len(encoded) <= MAX_BLE_PAYLOAD:
-            return encoded
+        if len(encode()) <= MAX_BLE_PAYLOAD:
+            return encode()
     work.pop("sessions", None)
-    return json.dumps(work, separators=(",", ":"))
+    return encode()
 
 
 async def connect_and_run(address: str, stop_event: asyncio.Event) -> bool:

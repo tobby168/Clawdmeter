@@ -72,7 +72,7 @@ hooks = data.setdefault("hooks", {})
 # Subscribe to events that move session state: tool-use boundaries and Stop.
 # UserPromptSubmit gives us a session lifecycle anchor when the user first
 # engages even before any tool fires.
-EVENTS = ["PreToolUse", "PostToolUse", "Stop", "UserPromptSubmit"]
+EVENTS = ["PreToolUse", "PostToolUse", "Stop", "UserPromptSubmit", "SessionStart"]
 for event in EVENTS:
     rules = hooks.setdefault(event, [])
     if not isinstance(rules, list): rules = []
