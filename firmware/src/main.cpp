@@ -10,6 +10,8 @@
 #include "imu.h"
 #include "splash.h"
 #include "usage_rate.h"
+#include "idle.h"
+#include "idle_cfg.h"
 
 #ifdef BOARD_AMOLED_18
 #include "io_expander.h"
@@ -119,6 +121,11 @@ static void touch_read() {
         touch_pressed = false;
     }
 #endif
+
+    // Touch never counts as user activity and is fully swallowed while the
+    // panel is dark — avoids accidental wakes and prevents LVGL from secretly
+    // toggling splash<->usage behind a black screen.
+    if (idle_is_asleep()) touch_pressed = false;
 }
 
 // ---- LVGL draw buffers (PSRAM-backed, partial render) ----
@@ -353,7 +360,7 @@ void setup() {
     // Init display
     gfx->begin();
     gfx->fillScreen(0x0000);
-    gfx->setBrightness(200);
+    idle_init();  // sets brightness to DISPLAY_DEFAULT_BRIGHTNESS and starts idle timer
 
     // Init PMU
     power_init();
@@ -443,6 +450,11 @@ static void handle_rotation_change(void) {
     static uint8_t  ramp_step = 0;  // 0=idle, 1-4=ramping
     static uint32_t ramp_last = 0;
 
+    // While asleep the rotation visual transition (blank + ramp) would fight
+    // the idle fade. Defer: a rotation that happens during sleep will be
+    // detected after wake and ramped in then.
+    if (idle_is_asleep()) return;
+
     uint8_t rot = imu_get_rotation();
     if (rot != last_rotation) {
         gfx->setBrightness(0);
@@ -457,7 +469,7 @@ static void handle_rotation_change(void) {
     if (now - ramp_last < 25) return;
     ramp_last = now;
 
-    static const uint8_t levels[] = {60, 120, 170, 200};
+    static const uint8_t levels[] = {60, 120, 170, DISPLAY_DEFAULT_BRIGHTNESS};
     gfx->setBrightness(levels[ramp_step - 1]);
     if (ramp_step >= 4) ramp_step = 0;
     else                ramp_step++;
@@ -466,6 +478,7 @@ static void handle_rotation_change(void) {
 
 void loop() {
     touch_read();
+    idle_tick();
     lv_timer_handler();
     ui_tick_anim();
     ble_tick();
@@ -477,28 +490,52 @@ void loop() {
     //   LEFT (GPIO 0 / BOOT) → Space (voice-mode push-to-talk)
     //   AMOLED-2.16 only: RIGHT (GPIO 18) → Shift+Tab (Claude Code mode toggle)
     //   PWR  → cycle screens; on splash, cycle animations
+    // First press from sleep is consumed for wake only (idle_consume_wake_press
+    // returns true) — the normal action only fires from the second press.
+    // Activity bookkeeping also happens inside idle_consume_wake_press, so we
+    // don't need separate idle_note_activity() calls here.
     {
         static bool back_was = false;
+        static bool back_wake_swallowed = false;
         bool back_now = (digitalRead(BTN_BACK) == LOW);
         if (back_now != back_was) {
-            if (back_now) ble_keyboard_press(0x2C, 0);  // HID Space, no mods
-            else          ble_keyboard_release();
+            if (back_now) {
+                if (idle_consume_wake_press()) {
+                    back_wake_swallowed = true;
+                } else {
+                    ble_keyboard_press(0x2C, 0);  // HID Space, no mods
+                }
+            } else {
+                if (back_wake_swallowed) back_wake_swallowed = false;
+                else                     ble_keyboard_release();
+            }
             back_was = back_now;
         }
 
 #ifndef BOARD_AMOLED_18
         static bool fwd_was = false;
+        static bool fwd_wake_swallowed = false;
         bool fwd_now = (digitalRead(BTN_FWD) == LOW);
         if (fwd_now != fwd_was) {
-            if (fwd_now) ble_keyboard_press(0x2B, 0x02);  // HID Tab + LEFT_SHIFT
-            else         ble_keyboard_release();
+            if (fwd_now) {
+                if (idle_consume_wake_press()) {
+                    fwd_wake_swallowed = true;
+                } else {
+                    ble_keyboard_press(0x2B, 0x02);  // HID Tab + LEFT_SHIFT
+                }
+            } else {
+                if (fwd_wake_swallowed) fwd_wake_swallowed = false;
+                else                    ble_keyboard_release();
+            }
             fwd_was = fwd_now;
         }
 #endif
 
         if (power_pwr_pressed()) {
-            if (ui_get_current_screen() == SCREEN_SPLASH) splash_next();
-            else                                          ui_cycle_screen();
+            if (!idle_consume_wake_press()) {
+                if (ui_get_current_screen() == SCREEN_SPLASH) splash_next();
+                else                                          ui_cycle_screen();
+            }
         }
     }
 
