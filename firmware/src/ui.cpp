@@ -37,53 +37,47 @@ LV_FONT_DECLARE(font_cjk_16);
 // Activity screen font + spacing budget. Portrait 368x448 has less
 // vertical room, but the previous font scale (12-16pt) was unreadable
 // at arm's length — bumped one or two steps with a tighter list region.
-// Activity is the only screen that uses its own title baseline (everything
-// else aligns to the shared TITLE_Y=30). We push it ~15px lower so the
-// title doesn't crowd the rounded display corners and battery icon.
+// Per upstream review feedback (HermannBjorgvin/Clawdmeter#22): bigger
+// fonts across the board and the footer dropped, giving the panel more
+// vertical room. CJK prompt + todo fonts on the 1.8" board stay at 16pt
+// — bumping them would require generating a font_cjk_20 (~+1MB flash).
 #ifdef BOARD_AMOLED_18
-#define ACT_TITLE_FONT     font_styrene_20
-#define ACT_MODEL_FONT     font_styrene_14
-// Prompt + todo body use the CJK-capable font so Chinese / Japanese /
-// Korean text from real Claude Code sessions renders instead of
-// falling through to blank glyphs. Headline (28pt) stays in the
-// Styrene brand font — Chinese activeForms there won't render, but
-// generating a 28pt CJK font would balloon flash by another ~1MB.
+#define ACT_TITLE_FONT     font_styrene_24
+#define ACT_MODEL_FONT     font_styrene_16
 #define ACT_PROMPT_FONT    font_cjk_16
 #define ACT_ACTIVE_FONT    font_styrene_28
 #define ACT_PROGRESS_FONT  font_styrene_20
 #define ACT_TODO_FONT      font_cjk_16
-#define ACT_FOOTER_FONT    font_styrene_14
-#define ACT_TODO_ROW_H     24
+#define ACT_TODO_ROW_H     26
 #define ACT_TITLE_Y        45
-#define ACT_MODEL_Y        70
-#define ACT_PROMPT_Y       94
-#define ACT_PROMPT_H       30   // font_cjk_16 line_height is 31 — was 22, clipped descenders
-#define ACT_ACTIVE_Y       132  // bumped from 120 to give the taller prompt row room
-#define ACT_ACTIVE_H       60   // up to 2 lines of font_styrene_28
-#define ACT_PANEL_Y        195  // bumped from 185 to follow the headline
-#define ACT_PANEL_H        185  // progress header + 5 rows × 24 + padding
-#define ACT_FOOTER_Y       412  // bumped from 402 to stay just below the panel
-// Counter width reservation: ~60px for "9/9" at font_styrene_20, plus the
-// battery icon (48 + 20 = 68 from the right edge) → shift counter left.
+#define ACT_TITLE_H        30
+#define ACT_MODEL_Y        78
+#define ACT_PROMPT_Y       104
+#define ACT_PROMPT_H       30
+#define ACT_ACTIVE_Y       138
+#define ACT_ACTIVE_H       60
+#define ACT_PANEL_Y        202
+#define ACT_PANEL_H        228
+// Counter width reservation: ~60px for "9/9", plus the battery icon
+// (48 + 20 = 68 from the right edge) → shift counter left.
 #define ACT_COUNTER_RIGHT  76
 #else
 #define ACT_TITLE_FONT     font_styrene_28
-#define ACT_MODEL_FONT     font_styrene_20
-#define ACT_PROMPT_FONT    font_styrene_20
+#define ACT_MODEL_FONT     font_styrene_24
+#define ACT_PROMPT_FONT    font_styrene_24
 #define ACT_ACTIVE_FONT    font_styrene_28
 #define ACT_PROGRESS_FONT  font_styrene_24
-#define ACT_TODO_FONT      font_styrene_20
-#define ACT_FOOTER_FONT    font_styrene_20
-#define ACT_TODO_ROW_H     30
+#define ACT_TODO_FONT      font_styrene_24
+#define ACT_TODO_ROW_H     34
 #define ACT_TITLE_Y        50
-#define ACT_MODEL_Y        86
-#define ACT_PROMPT_Y       118
-#define ACT_PROMPT_H       30
-#define ACT_ACTIVE_Y       160
-#define ACT_ACTIVE_H       60
-#define ACT_PANEL_Y        228
-#define ACT_PANEL_H        202  // progress header + 5 rows × 30 + padding
-#define ACT_FOOTER_Y       444
+#define ACT_TITLE_H        36
+#define ACT_MODEL_Y        94
+#define ACT_PROMPT_Y       130
+#define ACT_PROMPT_H       34
+#define ACT_ACTIVE_Y       178
+#define ACT_ACTIVE_H       64
+#define ACT_PANEL_Y        252
+#define ACT_PANEL_H        222
 #define ACT_COUNTER_RIGHT  76
 #endif
 
@@ -139,8 +133,6 @@ static lv_obj_t* lbl_act_in_progress;    // ">> Reworking UI layout"
 static lv_obj_t* act_todo_panel;         // rounded card wrapping progress + list
 static lv_obj_t* lbl_act_progress;       // "5/12 done" — header inside the panel
 static lv_obj_t* act_list;               // scrollable flex container of todo rows
-static lv_obj_t* lbl_act_footer;         // "last active 30s ago"
-static lv_obj_t* lbl_act_placeholder;    // shown when 0 sessions
 static ActivityData cached_activity = {};
 static uint8_t current_session_idx = 0;
 
@@ -531,11 +523,14 @@ static void init_activity_screen(lv_obj_t* scr) {
     lv_obj_set_style_text_color(lbl_act_title, COL_TEXT, 0);
     lv_obj_set_pos(lbl_act_title, MARGIN, ACT_TITLE_Y);
     // Reserve right margin for: counter (~50px worst case "99/99") +
-    // its own ACT_COUNTER_RIGHT pad + a small gap. Fixed height needed
-    // alongside LV_LABEL_LONG_DOT or the label wraps instead of clipping.
+    // its own ACT_COUNTER_RIGHT pad + a small gap.
+    // LV_LABEL_LONG_SCROLL_CIRCULAR marquees long project names so the
+    // tail of "nostalgic-merkle-a4ffeb" type names stays readable. The
+    // animation only kicks in when the text is wider than the box, so
+    // short names render statically.
     lv_obj_set_size(lbl_act_title,
-                    CONTENT_W - (ACT_COUNTER_RIGHT - MARGIN) - 50, 26);
-    lv_label_set_long_mode(lbl_act_title, LV_LABEL_LONG_DOT);
+                    CONTENT_W - (ACT_COUNTER_RIGHT - MARGIN) - 50, ACT_TITLE_H);
+    lv_label_set_long_mode(lbl_act_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
 
     // Model on its own line (subtitle under project name).
     lbl_act_model = lv_label_create(activity_container);
@@ -594,25 +589,10 @@ static void init_activity_screen(lv_obj_t* scr) {
     // gestures on the container above.
     lv_obj_add_flag(act_list, LV_OBJ_FLAG_EVENT_BUBBLE);
 
-    // Footer — "last active Ns ago".
-    lbl_act_footer = lv_label_create(activity_container);
-    lv_label_set_text(lbl_act_footer, "");
-    lv_obj_set_style_text_font(lbl_act_footer, &ACT_FOOTER_FONT, 0);
-    lv_obj_set_style_text_color(lbl_act_footer, COL_DIM, 0);
-    lv_obj_set_pos(lbl_act_footer, MARGIN, ACT_FOOTER_Y);
-
-    // Placeholder shown when no sessions are active. Use the progress
-    // font (smaller) and constrain to the content width so multi-line
-    // text wraps within the rounded-corner safe area.
-    lbl_act_placeholder = lv_label_create(activity_container);
-    lv_label_set_text(lbl_act_placeholder,
-                      "No active sessions\n\nStart Claude Code\nin any terminal");
-    lv_obj_set_style_text_font(lbl_act_placeholder, &ACT_PROGRESS_FONT, 0);
-    lv_obj_set_style_text_color(lbl_act_placeholder, COL_DIM, 0);
-    lv_obj_set_style_text_align(lbl_act_placeholder, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_width(lbl_act_placeholder, CONTENT_W);
-    lv_label_set_long_mode(lbl_act_placeholder, LV_LABEL_LONG_WRAP);
-    lv_obj_center(lbl_act_placeholder);
+    // No footer / placeholder — the splash animation IS the empty
+    // state now (default screen morphs to / from it based on session
+    // count), and per upstream review the "last active Ns ago" line
+    // was carrying more visual weight than information.
 
     lv_obj_add_flag(activity_container, LV_OBJ_FLAG_HIDDEN);
 }
@@ -635,12 +615,6 @@ static lv_color_t todo_color(todo_status_t s) {
     }
 }
 
-static void format_age(uint32_t secs, char* buf, size_t len) {
-    if (secs < 60)        snprintf(buf, len, "last active %us ago", (unsigned)secs);
-    else if (secs < 3600) snprintf(buf, len, "last active %um ago", (unsigned)(secs / 60));
-    else                  snprintf(buf, len, "last active %uh ago", (unsigned)(secs / 3600));
-}
-
 static void render_activity(void) {
     if (!activity_container) return;
 
@@ -649,23 +623,21 @@ static void render_activity(void) {
 
     const bool any = cached_activity.valid && cached_activity.session_count > 0;
     if (!any) {
-        lv_obj_clear_flag(lbl_act_placeholder, LV_OBJ_FLAG_HIDDEN);
+        // The splash screen morphs to / from this state — nothing to do
+        // here, the activity_container itself gets hidden by the
+        // top-level apply_default_screen_state() handler.
         lv_obj_add_flag(lbl_act_title,        LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lbl_act_model,        LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lbl_act_counter,      LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lbl_act_prompt,       LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lbl_act_in_progress,  LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(act_todo_panel,       LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(lbl_act_footer,       LV_OBJ_FLAG_HIDDEN);
         return;
     }
-    lv_obj_add_flag(lbl_act_placeholder, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(lbl_act_title,       LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(lbl_act_model,       LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(lbl_act_counter,     LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(lbl_act_in_progress, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(act_todo_panel,      LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(lbl_act_footer,      LV_OBJ_FLAG_HIDDEN);
 
     if (current_session_idx >= cached_activity.session_count) current_session_idx = 0;
     const SessionData& s = cached_activity.sessions[current_session_idx];
@@ -723,8 +695,16 @@ static void render_activity(void) {
         lv_label_set_text(lbl_act_in_progress, buf);
         lv_obj_set_style_text_color(lbl_act_in_progress, COL_ACCENT, 0);
     } else if (s.current_tool[0]) {
-        char buf[64];
-        snprintf(buf, sizeof(buf), ">>  Doing: %s", s.current_tool);
+        // When the tool has args (Bash command, file path, etc), inline
+        // them as "Bash · git status" so the user sees what's actually
+        // being run, not just the tool name.
+        char buf[128];
+        if (s.current_tool_args[0]) {
+            snprintf(buf, sizeof(buf), ">>  %s | %s",
+                     s.current_tool, s.current_tool_args);
+        } else {
+            snprintf(buf, sizeof(buf), ">>  Doing: %s", s.current_tool);
+        }
         lv_label_set_text(lbl_act_in_progress, buf);
         lv_obj_set_style_text_color(lbl_act_in_progress, COL_ACCENT, 0);
     } else if (s.phase == PHASE_IDLE) {
@@ -734,6 +714,15 @@ static void render_activity(void) {
         lv_label_set_text(lbl_act_in_progress, "(no todos)");
         lv_obj_set_style_text_color(lbl_act_in_progress, COL_DIM, 0);
     }
+
+    // Hide the todo panel entirely when there are no todos — the
+    // headline carries the focus and a "0/0 done" empty card was
+    // taking visual weight without conveying anything.
+    if (s.todo_count == 0) {
+        lv_obj_add_flag(act_todo_panel, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_clear_flag(act_todo_panel, LV_OBJ_FLAG_HIDDEN);
 
     // Progress counter.
     {
@@ -772,13 +761,6 @@ static void render_activity(void) {
         lv_label_set_long_mode(row, LV_LABEL_LONG_DOT);
         lv_obj_set_style_pad_all(row, 0, 0);
         lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE);
-    }
-
-    // Footer.
-    {
-        char buf[40];
-        format_age(s.last_active_secs, buf, sizeof(buf));
-        lv_label_set_text(lbl_act_footer, buf);
     }
 }
 
@@ -938,30 +920,45 @@ static void ble_reset_click_cb(lv_event_t* e) {
 
 // Decide what to show inside the splash "default" screen based on the
 // daemon's session state. Cross-fades the splash animation against the
-// activity widget tree so a fresh session arrives as a transform, not a
-// hard swap. Safe to call when we're on a non-splash screen — it no-ops
-// in that case because the splash + activity containers are already
-// hidden by ui_show_screen().
+// activity widget tree on STATE CHANGE only — re-renders within the
+// same state (e.g. when a session goes idle and the next-most-recent
+// session slides into the visible slot) happen instantly so the fade
+// doesn't grab attention with every push (upstream review feedback in
+// HermannBjorgvin/Clawdmeter#22). Safe to call from any screen — it
+// no-ops when we're not currently on splash.
 static void apply_default_screen_state(void) {
+    static bool last_morph_active = false;
     if (current_screen != SCREEN_SPLASH) return;
     const bool has_sessions = cached_activity.valid && cached_activity.session_count > 0;
+    const bool state_changed = has_sessions != last_morph_active;
+    last_morph_active = has_sessions;
     lv_obj_t* splash_root = splash_get_root();
     if (has_sessions) {
         lv_obj_clear_flag(activity_container, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_fade_in(activity_container, SPLASH_MORPH_MS, 0);
-        if (splash_root && !lv_obj_has_flag(splash_root, LV_OBJ_FLAG_HIDDEN)) {
-            lv_obj_fade_out(splash_root, SPLASH_MORPH_MS, 0);
+        if (state_changed) {
+            lv_obj_fade_in(activity_container, SPLASH_MORPH_MS, 0);
+            if (splash_root && !lv_obj_has_flag(splash_root, LV_OBJ_FLAG_HIDDEN)) {
+                lv_obj_fade_out(splash_root, SPLASH_MORPH_MS, 0);
+            } else {
+                splash_hide();
+            }
         } else {
+            // Already in activity mode — just make sure splash is gone
+            // and the activity container is fully opaque (no leftover
+            // fade-out animation).
             splash_hide();
+            lv_obj_set_style_opa(activity_container, LV_OPA_COVER, 0);
         }
     } else {
         splash_show();
-        if (splash_root) {
-            lv_obj_set_style_opa(splash_root, LV_OPA_COVER, 0);
-            lv_obj_fade_in(splash_root, SPLASH_MORPH_MS, 0);
-        }
-        if (!lv_obj_has_flag(activity_container, LV_OBJ_FLAG_HIDDEN)) {
-            lv_obj_fade_out(activity_container, SPLASH_MORPH_MS, 0);
+        if (splash_root) lv_obj_set_style_opa(splash_root, LV_OPA_COVER, 0);
+        if (state_changed) {
+            if (splash_root) lv_obj_fade_in(splash_root, SPLASH_MORPH_MS, 0);
+            if (!lv_obj_has_flag(activity_container, LV_OBJ_FLAG_HIDDEN)) {
+                lv_obj_fade_out(activity_container, SPLASH_MORPH_MS, 0);
+            }
+        } else {
+            lv_obj_add_flag(activity_container, LV_OBJ_FLAG_HIDDEN);
         }
     }
 }
