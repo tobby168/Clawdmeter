@@ -1,9 +1,7 @@
 #include <Arduino.h>
 #include "idle.h"
 #include "idle_cfg.h"
-#include "display_cfg.h"
-
-extern PlatformDisplay *gfx;
+#include "hal/display_hal.h"
 
 enum IdleState {
     STATE_AWAKE,
@@ -20,7 +18,7 @@ static uint8_t  fade_from = DISPLAY_DEFAULT_BRIGHTNESS;
 static uint8_t  fade_to   = 0;
 
 static void apply_brightness(uint8_t b) {
-    gfx->setBrightness(b);
+    display_hal_set_brightness(b);
 }
 
 static void begin_fade(uint8_t to, uint32_t now) {
